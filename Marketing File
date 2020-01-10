@@ -1,0 +1,259 @@
+$UDI I_COMMON
+$UDI I_PROLOGUE\ATM01\*\*
+*
+* Oddball process to process a file and extract card records for the CU to use
+* I thought it would only be used once but it turned out that they needed it done many times.
+*
+PRINT "Enter file name placed into ./EFT.TRANSFER/ " :
+INPUT INFILE
+INFILE = TRIM(INFILE)
+IF INFILE = "END" THEN STOP
+PRINT
+*
+PRINT "Processing ./EFT.TRANSFER/" : INFILE : " continue? (Y/N) " :
+INPUT TEMP.PROCESS
+TEMP.PROCESS = (TRMP.PROCESS)
+IF TEMP.PROCESS <> "Y" THEN STOP
+*
+*
+OPEN '', 'EMP.INDEX' TO EMP.INDEX ELSE STOP " EMP.INDEX"
+OPEN '', 'CLIENT'    TO CLIENT    ELSE STOP " CLIENT"
+OPEN '', 'CMS.CARD'  TO CMS.CARD  ELSE STOP " CMS.CARD"
+OPEN '', 'CLIENT'   TO CLIENT   ELSE STOP " CLIENT"
+OPEN 'SAVEDLISTS' TO SAVEDLISTS ELSE STOP "SAVEDLISTS"
+*
+MK.FILE = INFILE : ".MMARKETING"
+MK.BAD  = INFILE : ".MSCRUBBED"
+C.FILE  = INFILE : ".MCARKETING"
+C.BAD   = INFILE : ".CSCRUBBED"
+*
+OPEN '', 'MSCRUBBED.LOG' TO MSCRUBBED.LOG ELSE STOP " MSCRUBBED.LOG"
+OPEN '', 'CSCRUBBED.LOG' TO CSCRUBBED.LOG ELSE STOP " CSCRUBBED.LOG"
+*
+MKDATA.OUT = ''
+ERRMSG     = ''
+WRITEFLG   = 1
+CALL SR.OPENSEQFILE("EFT.TRANSFER",MK.FILE, MKDATA.OUT, WRITEFLG, "","",ERRMSG)
+IF ERRMSG # "" THEN STOP "UNABLE TO OPEN " : MK.FILE
+*
+MKDATA.BAD = ''
+ERRMSG     = ''
+WRITEFLG   = 1
+CALL SR.OPENSEQFILE("EFT.TRANSFER",MK.BAD, MKDATA.BAD, WRITEFLG, "","",ERRMSG)
+IF ERRMSG # "" THEN STOP "UNABLE TO OPEN " : MK.BAD
+*
+CDATA.OUT = ''
+ERRMSG     = ''
+WRITEFLG   = 1
+CALL SR.OPENSEQFILE("EFT.TRANSFER",C.FILE, CDATA.OUT, WRITEFLG, "","",ERRMSG)
+IF ERRMSG # "" THEN STOP "UNABLE TO OPEN " : C.FILE
+*
+CDATA.BAD = ''
+ERRMSG     = ''
+WRITEFLG   = 1
+CALL SR.OPENSEQFILE("EFT.TRANSFER",C.BAD, CDATA.BAD, WRITEFLG, "","",ERRMSG)
+IF ERRMSG # "" THEN STOP "UNABLE TO OPEN " : C.BAD
+*
+* CU supplied mail codes to use while scrubbing card records
+Mail_Codes    = 91
+Mail_Codes<2> = 95
+Mail_Codes<3> = 98
+Mail_Codes<4> = 99
+*
+Identifier = "          "; * Originally taken from position 17
+Campaign   = "BU********0316"; * Originally taken from pos. 27
+Write_Ct  = 0
+Write_Bd  = 0
+Update_Ct = 0
+Record_Ct = 0
+Save.PANs = ""
+Done      = 0
+*
+LOOP
+  READNEXT Data_In ELSE Done = 1
+UNTIL Done DO
+  GOSUB Read_Data
+  GOSUB Build_Marketing
+  GOSUB Write_Marketing
+  Record_Ct += 1
+  IF MOD(Record_Ct, 1000) ELSE PRINT "Processing " : Record_Ct "R#7" : PAN "R#20"
+REPEAT
+WRITE Save.PANs ON SAVEDLISTS, "MARKETING.PANS000"
+PRINT
+PRINT "Processing " : Record_Ct "R#7" : PAN "R#20"
+PRINT "Written    " : Write_Ct  "R#7"
+PRINT "Skipped    " : Write_Bd  "R#7"
+PRINT "Done"
+PRINT
+STOP
+*
+*
+Read_Data:
+PAN = Data_In[1, 16]
+* The identifier and campaign were originally retrieved from here.
+READ CMS.Rec FROM CMS.CARD, PAN ELSE CMS.Rec = ""
+CLNO = CMS.Rec<1>
+RETURN
+*
+*
+Build_Marketing: 
+*Build a record in the requested format
+GOSUB Retrieve_Address
+GOSUB Build_Full_Name
+Data_Out  = Identifier
+Data_Out := Full_Name    "L#100"
+Data_Out := ADDR1        "L#100"
+Data_Out := ADDR2        "L#100"
+Data_Out := CITY[ 1, 25] "L#25"
+Data_Out := STATE[1,  2] "L#100"
+Data_Out := ZIP[  1,  9] "L#100"
+Data_Out := Campaign
+Data_Out := "    "; *Originally the last four of the PAN again
+RETURN
+*
+Retrieve_Address:
+READ CIO FROM CLIENT, CLNO ELSE CIO = ""
+* BASICALL JUST A CALL TO A STANDARD PROCEDURE
+ACIO         = ""
+ACC          = ""
+ACC.MODE     = ""
+ALT          = ""
+FGN          = ""
+LOC.FLAG     = ""
+MODE         = ""
+OVERRIDE.LOG = ""
+SPARE1       = ""
+SPARE2       = ""
+ADDRTYPE     = ""
+CALL SR.ADDRESS(CIO,ACIO,ADDR1,ADDR2,CITY,STATE,ZIP,FGN,ADDRTYPE,ACC.MODE,ALT,OVERRIDE.LOC,LOC.FLAG,SPARE1,SPARE2)
+ADDR1 = TRIM(ADDR1)
+ADDR2 = TRIM(ADDR2)
+CITY  = TRIM(CITY)
+ZIP   = TRIM(TRIM(ZIP, "-", "A"), " ", "A")
+RETURN
+*
+*
+Build_Full_Name:
+Last_Name  = TRIM(CIO<1>)
+Last_Len   = LEN(TRIM(Last_Name, " ", "A"))
+Last_Space = DCOUNT(Last_Name, " ")
+Last_Ct    = COUNT(Last_Name, " ")
+*
+First_Name  = TRIM(CIO<7>)
+First_Len   = LEN(TRIM(First_Name, " ", "A"))
+First_Space = DCOUNT(First_Name, " ")
+First_Ct    = COUNT(First_Name, " ")
+*
+IF Last_Ct > 0 THEN
+  Suffix = FIELD(Last_Name, " ", Last_Space)
+  Last_Out = FIELD(Last_Name, " ", 1, Last_Space - 1)
+END ELSE
+  Suffix = ""
+  Last_Out = Last_Name
+END
+*
+IF First_Ct > 0 THEN
+  MI = FIELD(First_Name, " ", First_Space)
+  First_Out = FIELD(First_Name, " ", 1, First_Space - 1)
+END ELSE
+  MI = ""
+  First_Out = First_Name
+END
+Full_Name  = First_Out : " "
+* CU wanted MI dropped
+* Full_Name := MI        : " "
+Full_Name := Last_Out  : " "
+Full_Name := Suffix
+Full_Name  = TRIM(Full_Name)
+RETURN
+*
+*
+Write_Marketing:
+GOSUB Write_Address
+GOSUB Write_CLNO
+RETURN
+*
+*
+Write_Address:
+* Need to check if marketing information has already been sent to this address as
+* we don't want to send it again.
+* I built a file of addresses we already sent marketing information to.  I build a
+* key based on the address and check if the key for this card has already been used
+* to mail something.  Skip this card if it has otherwise send the information and
+* update the file with this address so another won't be sent.
+* I had to manage this file for over a year when I originally planned on deleting it
+* after one use.
+Household_Key = ADDR1 : ADDR2 : CITY : STATE : ZIP
+Household_Key = TRIM(Household_Key, " ", "A")
+READ Existing_Address FROM MAILED.ADDR, Household_Key THEN
+  Scrub_Card = "Multiple Cards:  " : Household_Key
+  RELEASE MAILED.ADDR, Household_Key
+END ELSE
+  Scrub_Card = ""
+  Write Data_Out ON MAILED.ADDR, Household_Key
+END
+*
+* Check thed for reasons to scrub it
+IF CMS.Rec<11> <> "1" THEN Scrub_Card = "STATUS CODE:  " : CMS.Rec<11>
+GOSUB Check_Mail
+IF CMS.Rec = "" THEN Scrub_Card = "NO CMS.CARD:  " : PAN
+*
+* Write to the marketing or scrub files now
+IF Scrub_Card = "" THEN
+  WRITESEQ Data_Out APPEND ON MKDATA.OUT THEN
+    Write_Ct += 1
+  END ELSE
+    PRINT "Unable to Write " : Data_Out
+  END
+  Save.PANs<-1> = PAN
+END ELSE
+  WRITESEQ Data_Out APPEND ON MKDATA.BAD THEN
+    Write_Bd += 1
+  END ELSE
+    PRINT "Unable to Write " : Data_Out
+  END
+  Write Scrub_Card on MSCRUBBED.LOG, PAN
+END
+RETURN
+*
+*
+Write_CLNO:
+* See if this member has already had a marketing mailer sent.
+* Similar file as the one I built for the addresses already used
+READ Existing_Address FROM MAILED.CLNO, CLNO THEN
+  Scrub_Card = "Multiple Cards:  " : CLNO
+  RELEASE MAILED.CLNO, CLNO
+END ELSE
+  Scrub_Card = ""
+  WRITE CIO ON MAILED.CLNO, CLNO
+END
+*
+* Check the card for reasons to scrub it
+IF CMS.Rec<11> <> "1" THEN Scrub_Card = "STATUS CODE:  " : CMS.Rec<11>
+GOSUB Check_Mail
+IF CMS.Rec = "" THEN Scrub_Card = "NO CMS.CARD:  " : PAN
+*
+* Write to the marketing or scrub files now
+IF Scrub_Card = "" THEN
+  WRITESEQ Data_Out APPEND ON CLDATA.OUT THEN
+    Write_Ct += 1
+  END ELSE
+    PRINT "Unable to Write " : Data_Out
+  END
+  Save.PANs<-1> = PAN
+END ELSE
+  WRITESEQ Data_Out APPEND ON CLDATA.BAD THEN
+    Write_Bd += 1
+  END ELSE
+    PRINT "Unable to Write " : Data_Out
+  END
+  Write Scrub_Card on CSCRUBBED.LOG, PAN
+END
+RETURN
+*
+*
+Check_Mail:
+Mail_Current = CIO<19, 1>
+LOCATE(Mail_Current, Mail_Codes; POS) ELSE POS = 0
+IF POS THEN Scrub_Card = "MAIL CODE:  " : Mail_Current
+RETURN
